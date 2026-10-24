@@ -17,8 +17,29 @@ done
 
 uv run -q --with shapely --with pyproj python -I build/build.py "$SRC/clio/cliopatria.geojson" "$SRC/ne" .cache
 MS="npx -y mapshaper@0.6.102"
-$MS .cache/raw.geojson -simplify 10% keep-shapes -filter-slivers min-area=20km2 \
-  -o format=topojson quantization=60000 site/data/borders.json
+# mapshaper считает площади в градусах, только если долготы в пределах ±180, а у нас −25…235:
+# восточная Чукотка лежит за 180°, Аляска переносится туда же. Сдвигаем на −55° до сборки и
+# возвращаем сдвиг через transform TopoJSON.
+python3 -I - .cache/raw.geojson .cache/shifted.geojson <<'EOF'
+import json, sys
+def walk(c):
+    if isinstance(c[0], (int, float)):
+        c[0] = (c[0] + 360 if c[0] < -100 else c[0]) - 55
+    else:
+        for x in c: walk(x)
+d = json.load(open(sys.argv[1]))
+for f in d['features']: walk(f['geometry']['coordinates'])
+json.dump(d, open(sys.argv[2], 'w'))
+EOF
+$MS .cache/shifted.geojson -rename-layers raw -simplify 10% keep-shapes -filter-slivers min-area=20km2 \
+  -o format=topojson quantization=60000 .cache/borders.json
+python3 -I - .cache/borders.json site/data/borders.json <<'EOF'
+import json, sys
+t = json.load(open(sys.argv[1]))
+t['transform']['translate'][0] += 55
+t.pop('bbox', None)
+json.dump(t, open(sys.argv[2], 'w'), separators=(',', ':'))
+EOF
 $MS -i "$SRC/ne/ne_50m_land.geojson" "$SRC/ne/ne_50m_lakes.geojson" combine-files \
   -clip bbox=-180,10,180,85 -simplify 20% keep-shapes -filter-fields \
   -rename-layers land,lakes -o format=topojson quantization=60000 site/data/base.json

@@ -13,15 +13,27 @@ from collections import defaultdict
 from pyproj import Transformer
 import shapely
 from shapely import set_precision
-from shapely.geometry import box, mapping, shape
+from shapely.affinity import translate
+from shapely.geometry import Point, box, mapping, shape
 from shapely.ops import unary_union
 
 SRC, NE, OUT = sys.argv[1:4]
 YEAR_MIN, YEAR_MAX, DATA_MAX = 862, 2026, 2024
 EMPTY = shape({'type': 'Polygon', 'coordinates': []})
 
-# Регион карты: Евразия до Атлантики плюс Аляска.
-REGION = unary_union([box(-25, 10, 180, 85), box(-180, 45, -125, 75)])
+# Регион карты: Евразия до Атлантики плюс Аляска; полоса за 180° — для восточной Чукотки,
+# сдвинутой на +360° (см. ниже).
+REGION = unary_union([box(-25, 10, 180, 85), box(-180, 45, -125, 75), box(180, 60, 192, 75)])
+
+# Cliopatria обрезает полигоны по 180-му меридиану и теряет всё, что восточнее: Чукотку от
+# Уэлена до Провидения. Достраиваем её по суше Natural Earth, сдвинув на +360°, чтобы она
+# слилась с западной частью в один полигон без шва.
+# Остров Святого Лаврентия (США) лежит южнее 63,95° с. ш., Малый Диомид — восточнее 169° з. д.
+# Острова Врангеля и Геральд в Cliopatria нет совсем: советский флаг на Врангеле поднят в 1924 г.
+LAND = unary_union([shape(f['geometry']).buffer(0) for f in json.load(open(f'{NE}/ne_50m_land.geojson'))['features']])
+CHUKOTKA_E = translate(LAND.intersection(box(-180, 63.95, -169.0, 70.5)), xoff=360)
+WRANGEL = LAND.intersection(box(178, 70.5, 180, 72)).union(
+    translate(LAND.intersection(box(-180, 70.5, -175, 72)), xoff=360))
 
 recs = defaultdict(list)
 for f in json.load(open(SRC))['features']:
@@ -233,6 +245,10 @@ def state_geom(year):
         g = g.intersection(USSR_1941.union(TUVA if year == 1944 else EMPTY)
                            .union(rec(USSR, 1945).intersection(box(28, 68.5, 32, 70.5))))
         g = g.union(occupied(year)[0])
+    if g.contains(Point(179.5, 67)):
+        g = g.union(CHUKOTKA_E)
+    if year >= 1924:
+        g = g.union(WRANGEL)
     return g
 
 
